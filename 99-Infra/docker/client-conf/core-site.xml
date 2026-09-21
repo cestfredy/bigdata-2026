@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<!--
+  Configuration du CLIENT Hadoop embarqué dans le conteneur jupyter.
+
+  Les services du cluster (namenode, datanode, resourcemanager) reçoivent leur
+  configuration via hadoop.env, que l'entrypoint de l'image apache/hadoop
+  convertit en XML. Le conteneur jupyter n'exécute pas cet entrypoint : il lui
+  faut donc ses propres fichiers de configuration, que voici.
+-->
+<configuration>
+
+  <property>
+    <name>fs.defaultFS</name>
+    <value>hdfs://namenode:8020</value>
+  </property>
+
+  <property>
+    <name>hadoop.http.staticuser.user</name>
+    <value>root</value>
+  </property>
+
+  <!-- ================= Stockage objet MinIO (module 2) ================= -->
+  <property>
+    <name>fs.s3a.endpoint</name>
+    <value>http://minio:9000</value>
+  </property>
+  <property>
+    <name>fs.s3a.access.key</name>
+    <value>minioadmin</value>
+  </property>
+  <property>
+    <name>fs.s3a.secret.key</name>
+    <value>minioadmin</value>
+  </property>
+  <property>
+    <name>fs.s3a.path.style.access</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>fs.s3a.impl</name>
+    <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
+  </property>
+  <property>
+    <name>fs.s3a.connection.ssl.enabled</name>
+    <value>false</value>
+  </property>
+
+</configuration>

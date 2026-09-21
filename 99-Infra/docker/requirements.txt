@@ -1,0 +1,26 @@
+# Dépendances Python du poste de travail des TP
+# pyspark n'est pas qu'un client : la roue embarque la distribution Spark
+# complète (jars, spark-submit). C'est elle qui fournit SPARK_HOME dans
+# l'image, il n'y a donc aucune autre version de Spark avec qui diverger.
+pyspark==3.5.3
+jupyterlab==4.2.5
+notebook==7.2.2
+ipywidgets==8.1.5
+pandas==2.2.3
+pyarrow==17.0.0
+numpy==1.26.4
+matplotlib==3.9.2
+seaborn==0.13.2
+kafka-python-ng==2.2.3          # fork maintenu de kafka-python
+minio==7.2.9
+faker==30.3.0                   # génération des jeux de données de TP
+findspark==2.0.1
+tabulate==0.9.0
+
+# --- Module 6, TP11 : vision par ordinateur distribuée -----------------------
+# onnxruntime plutôt que PyTorch ou TensorFlow : environ 50 Mio au lieu de
+# plusieurs centaines, aucune dépendance CUDA, et surtout un format de modèle
+# OUVERT et portable — le pendant de Parquet pour les modèles. C'est aussi un
+# choix pédagogique : le cours défend les formats ouverts depuis le module 2.
+onnxruntime==1.19.2
+pillow==10.4.0                  # décodage et prétraitement des images

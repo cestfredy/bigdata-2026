@@ -1,0 +1,6 @@
+*.docx
+*.pptx
+SYLLABUS.md
+*-Corrige*
+.ipynb_checkpoints
+_build
