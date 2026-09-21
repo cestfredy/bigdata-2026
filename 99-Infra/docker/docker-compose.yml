@@ -1,0 +1,216 @@
+# =============================================================================
+#  Cluster pédagogique Big Data — M2 / Ingénieur
+#  Hadoop 3.3.6 · Spark 3.5.3 · Kafka 3.7 (KRaft) · MinIO · Iceberg 1.5
+#
+#  Démarrage :  docker compose up -d
+#  Arrêt      :  docker compose down          (les données HDFS survivent)
+#  Remise à zéro : docker compose down -v     (tout est effacé)
+#
+#  Interfaces web une fois démarré :
+#    JupyterLab ............ http://localhost:8888   (jeton : bigdata)
+#    NameNode HDFS ......... http://localhost:9870
+#    YARN ResourceManager .. http://localhost:8088
+#    Spark UI (application)  http://localhost:4040
+#    Spark History Server .. http://localhost:18080
+#    MinIO console ......... http://localhost:9001   (minioadmin / minioadmin)
+# =============================================================================
+
+name: bigdata-m2
+
+services:
+
+  # ------------------------------------------------------------------ HDFS
+  namenode:
+    image: apache/hadoop:3.3.6
+    container_name: namenode
+    hostname: namenode
+    user: root
+    command: ["hdfs", "namenode"]
+    env_file: [./hadoop.env]
+    environment:
+      ENSURE_NAMENODE_DIR: "/opt/hadoop/data/nameNode"
+    ports:
+      - "9870:9870"   # interface web
+      - "8020:8020"   # RPC client
+    volumes:
+      # Le volume est monte sur le PARENT : le script /opt/starter.sh ne formate
+      # HDFS que si $ENSURE_NAMENODE_DIR n'existe pas encore. Monte directement
+      # sur nameNode, Docker creerait le repertoire et le formatage serait ignore.
+      - namenode-data:/opt/hadoop/data
+    healthcheck:
+      # On interroge l etat REEL du NameNode : l interface web repond des le
+      # demarrage de Jetty, avant le chargement du fsimage. Elle ne prouve
+      # donc pas que HDFS est utilisable.
+      test: ["CMD-SHELL", "curl -sf 'http://localhost:9870/jmx?qry=Hadoop:service=NameNode,name=NameNodeStatus' | grep -q active"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [bigdata]
+
+  datanode1:
+    image: apache/hadoop:3.3.6
+    container_name: datanode1
+    hostname: datanode1
+    user: root
+    command: ["hdfs", "datanode"]
+    env_file: [./hadoop.env]
+    volumes:
+      - datanode1-data:/opt/hadoop/data/dataNode
+    depends_on:
+      namenode: {condition: service_healthy}
+    networks: [bigdata]
+
+  datanode2:
+    image: apache/hadoop:3.3.6
+    container_name: datanode2
+    hostname: datanode2
+    user: root
+    command: ["hdfs", "datanode"]
+    env_file: [./hadoop.env]
+    volumes:
+      - datanode2-data:/opt/hadoop/data/dataNode
+    depends_on:
+      namenode: {condition: service_healthy}
+    networks: [bigdata]
+
+  # ------------------------------------------------------------------ YARN
+  resourcemanager:
+    image: apache/hadoop:3.3.6
+    container_name: resourcemanager
+    hostname: resourcemanager
+    user: root
+    command: ["yarn", "resourcemanager"]
+    env_file: [./hadoop.env]
+    ports:
+      - "8088:8088"
+    depends_on:
+      namenode: {condition: service_healthy}
+    healthcheck:
+      # PAS localhost : yarn.resourcemanager.webapp.address vaut par defaut
+      # ${yarn.resourcemanager.hostname}:8088, donc Jetty se lie a l IP du
+      # conteneur et non a la boucle locale (contrairement au NameNode).
+      test: ["CMD-SHELL", "curl -sf http://resourcemanager:8088/ws/v1/cluster/info | grep -q STARTED"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [bigdata]
+
+  nodemanager:
+    image: apache/hadoop:3.3.6
+    container_name: nodemanager
+    hostname: nodemanager
+    user: root
+    command: ["yarn", "nodemanager"]
+    env_file: [./hadoop.env]
+    ports:
+      - "8042:8042"
+    depends_on:
+      resourcemanager: {condition: service_healthy}
+    networks: [bigdata]
+
+  # --------------------------------------------------------- Stockage objet
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    hostname: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # API S3
+      - "9001:9001"   # console web
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [bigdata]
+
+  # Crée les buckets utilisés par les TP, puis s'arrête. C'est normal de le
+  # voir en état "Exited (0)" : sa tâche est terminée.
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio-init
+    depends_on:
+      minio: {condition: service_healthy}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/lakehouse &&
+      mc mb --ignore-existing local/raw &&
+      mc mb --ignore-existing local/warehouse &&
+      echo 'Buckets MinIO prêts.'
+      "
+    networks: [bigdata]
+
+  # ----------------------------------------------------------------- Kafka
+  kafka:
+    image: apache/kafka:3.7.1
+    container_name: kafka
+    hostname: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      # KRaft : le broker est aussi controller, plus besoin de ZooKeeper
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: "bigdata-m2-cluster-0001"
+    ports:
+      - "29092:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks: [bigdata]
+
+  # -------------------------------------------------- Poste de travail TP
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyter
+    image: bigdata-m2/jupyter:1.0
+    container_name: jupyter
+    hostname: jupyter
+    env_file: [./hadoop.env]
+    environment:
+      JUPYTER_TOKEN: bigdata
+      HADOOP_CONF_DIR: /opt/hadoop/etc/hadoop
+      PYSPARK_PYTHON: python3
+      PYSPARK_DRIVER_PYTHON: python3
+      # Adresse annoncée aux executors YARN pour joindre le driver
+      SPARK_LOCAL_HOSTNAME: jupyter
+    ports:
+      - "8888:8888"    # JupyterLab
+      - "4040:4040"    # Spark UI de l'application en cours
+      - "4041:4041"
+    volumes:
+      - ../../:/home/tinku/cours      # tous les modules du cours
+      - ../data:/home/tinku/data
+      - jupyter-work:/home/tinku/work
+    depends_on:
+      namenode: {condition: service_healthy}
+      resourcemanager: {condition: service_healthy}
+    networks: [bigdata]
+
+volumes:
+  namenode-data:
+  datanode1-data:
+  datanode2-data:
+  minio-data:
+  kafka-data:
+  jupyter-work:
+
+networks:
+  bigdata:
+    driver: bridge

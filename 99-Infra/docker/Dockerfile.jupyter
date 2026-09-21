@@ -1,0 +1,96 @@
+# =============================================================================
+#  Poste de travail des TP : JupyterLab + PySpark 3.5.3 + client Hadoop 3.3.6
+#
+#  Trois principes de construction, appris à nos dépens :
+#
+#  1. AUCUN téléchargement de gros binaire depuis archive.apache.org.
+#     Spark vient du paquet pip `pyspark`, qui embarque la distribution
+#     complète — jars et spark-submit compris — et le client Hadoop est copié
+#     depuis l'image officielle apache/hadoop, que le cluster télécharge de
+#     toute façon. On passe ainsi de ~1,1 Gio de curl à zéro.
+#
+#  2. Les versions ne peuvent plus diverger. `pyspark==3.5.3` fournit à la fois
+#     la bibliothèque Python et le moteur : impossible de se retrouver avec un
+#     client Python 3.5.3 sur un Spark 3.4, source classique de pannes obscures.
+#
+#  3. Les rares téléchargements restants — les jars Maven, quelques dizaines de
+#     Mio — se font avec reprise automatique. Sur le réseau d'une salle de cours
+#     où trente machines construisent en même temps, une coupure passagère ne
+#     doit pas faire échouer le build.
+# =============================================================================
+
+# --- étage 1 : on emprunte le client Hadoop à l'image officielle -------------
+FROM apache/hadoop:3.3.6 AS hadoop
+
+# --- étage 2 : le poste de travail -------------------------------------------
+FROM python:3.11-slim-bookworm
+
+ARG SCALA_BIN=2.12
+ARG SPARK_VERSION=3.5.3
+ARG ICEBERG_VERSION=1.5.2
+# hadoop-aws doit correspondre à la version de Hadoop embarquée par Spark 3.5
+ARG HADOOP_AWS_VERSION=3.3.4
+ARG AWS_SDK_VERSION=1.12.262
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+    HADOOP_HOME=/opt/hadoop \
+    SPARK_HOME=/usr/local/lib/python3.11/site-packages/pyspark \
+    NB_USER=tinku \
+    NB_UID=1000
+
+# ------------------------------------------------------------ système + JVM
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openjdk-17-jdk-headless curl procps less vim-tiny ca-certificates \
+        netcat-openbsd tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# ------------------------------------- client Hadoop : commandes hdfs et yarn
+COPY --from=hadoop /opt/hadoop /opt/hadoop
+RUN rm -rf ${HADOOP_HOME}/share/doc
+
+ENV PATH=$JAVA_HOME/bin:$SPARK_HOME/bin:$HADOOP_HOME/bin:$PATH
+
+# ------------------------------------------- Python de TP, dont Spark lui-même
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --retries 10 --timeout 60 -r /tmp/requirements.txt \
+ && rm /tmp/requirements.txt \
+ && test -x ${SPARK_HOME}/bin/spark-submit
+
+# ------------------------------------------- dépendances JVM supplémentaires
+# Iceberg (module 2), S3A pour MinIO (module 2), connecteur Kafka (module 5).
+# Elles sont embarquées dans l'image plutôt que résolues à l'exécution via
+# --packages : les TP fonctionnent ainsi même sans réseau.
+RUN set -eux; \
+    M2=https://repo1.maven.org/maven2; \
+    DL="curl -fsSLO --retry 8 --retry-delay 3 --retry-all-errors --connect-timeout 20"; \
+    cd ${SPARK_HOME}/jars; \
+    $DL "${M2}/org/apache/iceberg/iceberg-spark-runtime-3.5_${SCALA_BIN}/${ICEBERG_VERSION}/iceberg-spark-runtime-3.5_${SCALA_BIN}-${ICEBERG_VERSION}.jar"; \
+    $DL "${M2}/org/apache/iceberg/iceberg-aws-bundle/${ICEBERG_VERSION}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar"; \
+    $DL "${M2}/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar"; \
+    $DL "${M2}/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar"; \
+    $DL "${M2}/org/apache/spark/spark-sql-kafka-0-10_${SCALA_BIN}/${SPARK_VERSION}/spark-sql-kafka-0-10_${SCALA_BIN}-${SPARK_VERSION}.jar"; \
+    $DL "${M2}/org/apache/spark/spark-token-provider-kafka-0-10_${SCALA_BIN}/${SPARK_VERSION}/spark-token-provider-kafka-0-10_${SCALA_BIN}-${SPARK_VERSION}.jar"; \
+    $DL "${M2}/org/apache/kafka/kafka-clients/3.4.1/kafka-clients-3.4.1.jar"; \
+    $DL "${M2}/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar"; \
+    $DL "${M2}/org/apache/spark/spark-avro_${SCALA_BIN}/${SPARK_VERSION}/spark-avro_${SCALA_BIN}-${SPARK_VERSION}.jar"
+
+# ------------------------------------------------------------ configurations
+COPY spark-defaults.conf ${SPARK_HOME}/conf/spark-defaults.conf
+# Le client Hadoop de ce conteneur n'exécute pas l'entrypoint de l'image
+# apache/hadoop : il ne peut donc pas dériver ses fichiers XML des variables
+# de hadoop.env. Il lui faut les siens.
+COPY client-conf/ ${HADOOP_HOME}/etc/hadoop/
+
+# ------------------------------------------------------- utilisateur non root
+RUN useradd -m -u ${NB_UID} -s /bin/bash ${NB_USER} \
+ && mkdir -p /home/${NB_USER}/work /home/${NB_USER}/cours /home/${NB_USER}/data \
+ && chown -R ${NB_USER}:${NB_USER} /home/${NB_USER}
+
+USER ${NB_USER}
+WORKDIR /home/tinku/work
+EXPOSE 8888 4040
+
+ENTRYPOINT ["tini", "-g", "--"]
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", \
+     "--ServerApp.root_dir=/home/tinku"]
