@@ -112,7 +112,7 @@ services:
 
   # --------------------------------------------------------- Stockage objet
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:RELEASE.2024-03-03T17-50-39Z
     container_name: minio
     hostname: minio
     command: server /data --console-address ":9001"
@@ -134,7 +134,7 @@ services:
   # Crée les buckets utilisés par les TP, puis s'arrête. C'est normal de le
   # voir en état "Exited (0)" : sa tâche est terminée.
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:RELEASE.2024-03-03T00-13-08Z
     container_name: minio-init
     depends_on:
       minio: {condition: service_healthy}
